@@ -31,12 +31,37 @@ PRIVATE_SUBNET_CIDR2=${PRIVATE_SUBNET_CIDR2:-"10.0.4.0/24"}
 MULTI_AZ=${MULTI_AZ:-"false"}
 AWS_PROFILE=${AWS_PROFILE:-"default"}
 
-# Create the stack
-aws cloudformation create-stack \
-  --stack-name $STACK_NAME \
-  --template-body file://$TEMPLATE_PATH \
-  --region $AWS_REGION \
-  --parameters \
+# Check if VPC exists
+echo "Checking if VPC exists..."
+EXISTING_VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=RDS-VPC" --query "Vpcs[0].VpcId" --output text --region $AWS_REGION --profile $AWS_PROFILE)
+
+if [ -z "$EXISTING_VPC_ID" ] || [ "$EXISTING_VPC_ID" == "None" ]; then
+    echo "VPC does not exist. Setting CreateVPC parameter to true."
+    CREATE_VPC="true"
+    EXISTING_VPC_ID=""
+    EXISTING_PUBLIC_SUBNET1_ID=""
+    EXISTING_PUBLIC_SUBNET2_ID=""
+else
+    echo "Found existing VPC: $EXISTING_VPC_ID"
+    CREATE_VPC="false"
+    
+    # Check for existing subnets
+    EXISTING_PUBLIC_SUBNET1_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$EXISTING_VPC_ID" "Name=cidr-block,Values=$PUBLIC_SUBNET_CIDR1" --query "Subnets[0].SubnetId" --output text --region $AWS_REGION --profile $AWS_PROFILE)
+    EXISTING_PUBLIC_SUBNET2_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$EXISTING_VPC_ID" "Name=cidr-block,Values=$PUBLIC_SUBNET_CIDR2" --query "Subnets[0].SubnetId" --output text --region $AWS_REGION --profile $AWS_PROFILE)
+    
+    if [ -z "$EXISTING_PUBLIC_SUBNET1_ID" ] || [ "$EXISTING_PUBLIC_SUBNET1_ID" == "None" ] || [ -z "$EXISTING_PUBLIC_SUBNET2_ID" ] || [ "$EXISTING_PUBLIC_SUBNET2_ID" == "None" ]; then
+        echo "Existing VPC found, but subnets are missing. Setting CreateVPC to true to create new VPC and subnets."
+        CREATE_VPC="true"
+        EXISTING_VPC_ID=""
+        EXISTING_PUBLIC_SUBNET1_ID=""
+        EXISTING_PUBLIC_SUBNET2_ID=""
+    else
+        echo "Found existing subnets: $EXISTING_PUBLIC_SUBNET1_ID, $EXISTING_PUBLIC_SUBNET2_ID"
+    fi
+fi
+
+# Prepare parameters
+PARAMS="\
     ParameterKey=DBInstanceClass,ParameterValue=$DB_INSTANCE_CLASS \
     ParameterKey=AllocatedStorage,ParameterValue=$ALLOCATED_STORAGE \
     ParameterKey=DBUsername,ParameterValue=$DB_USERNAME \
@@ -48,7 +73,72 @@ aws cloudformation create-stack \
     ParameterKey=PrivateSubnetCIDR1,ParameterValue=$PRIVATE_SUBNET_CIDR1 \
     ParameterKey=PrivateSubnetCIDR2,ParameterValue=$PRIVATE_SUBNET_CIDR2 \
     ParameterKey=MultiAZ,ParameterValue=$MULTI_AZ \
-  --capabilities CAPABILITY_IAM \
-  --profile $AWS_PROFILE
+    ParameterKey=CreateVPC,ParameterValue=$CREATE_VPC"
 
-echo "Stack creation initiated. Check the AWS CloudFormation console for status updates."
+# Add existing VPC and subnet parameters only if they exist
+if [ "$CREATE_VPC" = "false" ]; then
+    PARAMS="$PARAMS \
+    ParameterKey=ExistingVPCId,ParameterValue=$EXISTING_VPC_ID \
+    ParameterKey=ExistingPublicSubnet1Id,ParameterValue=$EXISTING_PUBLIC_SUBNET1_ID \
+    ParameterKey=ExistingPublicSubnet2Id,ParameterValue=$EXISTING_PUBLIC_SUBNET2_ID"
+fi
+
+# Check if the stack already exists
+stack_exists=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION --profile $AWS_PROFILE 2>&1)
+
+if echo "$stack_exists" | grep -q 'does not exist'; then
+    # Create the stack
+    echo "Creating new stack..."
+    aws cloudformation create-stack \
+      --stack-name $STACK_NAME \
+      --template-body file://$TEMPLATE_PATH \
+      --region $AWS_REGION \
+      --parameters $PARAMS \
+      --capabilities CAPABILITY_IAM \
+      --profile $AWS_PROFILE
+
+    echo "Waiting for stack creation to complete..."
+    aws cloudformation wait stack-create-complete \
+      --stack-name $STACK_NAME \
+      --region $AWS_REGION \
+      --profile $AWS_PROFILE
+else
+    # Update the stack
+    echo "Updating existing stack..."
+    aws cloudformation update-stack \
+      --stack-name $STACK_NAME \
+      --template-body file://$TEMPLATE_PATH \
+      --region $AWS_REGION \
+      --parameters $PARAMS \
+      --capabilities CAPABILITY_IAM \
+      --profile $AWS_PROFILE
+
+    echo "Waiting for stack update to complete..."
+    aws cloudformation wait stack-update-complete \
+      --stack-name $STACK_NAME \
+      --region $AWS_REGION \
+      --profile $AWS_PROFILE
+fi
+
+if [ $? -eq 0 ]; then
+  echo "Stack operation completed successfully. Creating pgvector extension..."
+
+  # Get the RDS endpoint
+  RDS_ENDPOINT=$(aws cloudformation describe-stacks \
+    --stack-name $STACK_NAME \
+    --query "Stacks[0].Outputs[?OutputKey=='RDSInstanceEndpoint'].OutputValue" \
+    --output text \
+    --region $AWS_REGION \
+    --profile $AWS_PROFILE)
+
+  # Create the pgvector extension
+  PGPASSWORD=$DB_PASSWORD psql -h $RDS_ENDPOINT -U $DB_USERNAME -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+  if [ $? -eq 0 ]; then
+    echo "pgvector extension created successfully."
+  else
+    echo "Failed to create pgvector extension."
+  fi
+else
+  echo "Stack operation failed. Check the AWS CloudFormation console for error details."
+fi

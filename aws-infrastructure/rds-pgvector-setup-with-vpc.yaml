@@ -14,7 +14,7 @@ Parameters:
   AllocatedStorage:
     Description: The size of the database (in GB)
     Type: Number
-    Default: 20
+    Default: 30
   DBUsername:
     Description: The database admin username
     Type: String
@@ -54,100 +54,123 @@ Parameters:
     AllowedValues:
       - true
       - false
+  ExistingVPCId:
+    Type: String
+    Description: The ID of the existing VPC (leave empty if creating a new VPC)
+    Default: ""
+  ExistingPublicSubnet1Id:
+    Type: String
+    Description: The ID of the existing public subnet in AZ1 (leave empty if creating a new VPC)
+    Default: ""
+  ExistingPublicSubnet2Id:
+    Type: String
+    Description: The ID of the existing public subnet in AZ2 (leave empty if creating a new VPC)
+    Default: ""
+  CreateVPC:
+    Description: Create a new VPC if set to true
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  ShouldCreateVPC: !Equals [!Ref CreateVPC, "true"]
+  UseExistingVPC: !And 
+    - !Not [!Condition ShouldCreateVPC]
+    - !Not [!Equals [!Ref ExistingVPCId, ""]]
 
 Resources:
   VPC:
     Type: AWS::EC2::VPC
+    Condition: ShouldCreateVPC
     Properties:
       CidrBlock: !Ref VPCCIDR
-      EnableDnsSupport: true
       EnableDnsHostnames: true
+      EnableDnsSupport: true
       Tags:
         - Key: Name
           Value: RDS-VPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: RDS-InternetGateway
+    Condition: ShouldCreateVPC
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
+    Condition: ShouldCreateVPC
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
   PublicSubnet1:
     Type: AWS::EC2::Subnet
+    Condition: ShouldCreateVPC
     Properties:
       VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
       CidrBlock: !Ref PublicSubnetCIDR1
-      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
+    Condition: ShouldCreateVPC
     Properties:
       VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
       CidrBlock: !Ref PublicSubnetCIDR2
-      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 2
 
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PrivateSubnetCIDR1
-      AvailabilityZone: !Select [0, !GetAZs ""]
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PrivateSubnetCIDR2
-      AvailabilityZone: !Select [1, !GetAZs ""]
-
-  RouteTable:
+  PublicRouteTable:
     Type: AWS::EC2::RouteTable
+    Condition: ShouldCreateVPC
     Properties:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: PublicRouteTable
+          Value: Public Route Table
 
   PublicRoute:
     Type: AWS::EC2::Route
+    Condition: ShouldCreateVPC
     DependsOn: AttachGateway
     Properties:
-      RouteTableId: !Ref RouteTable
+      RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
   PublicSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ShouldCreateVPC
     Properties:
       SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref RouteTable
+      RouteTableId: !Ref PublicRouteTable
 
   PublicSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ShouldCreateVPC
     Properties:
       SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref RouteTable
+      RouteTableId: !Ref PublicRouteTable
 
   RDSDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Subnet group for RDS
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
+      SubnetIds: !If 
+        - ShouldCreateVPC
+        - [!Ref PublicSubnet1, !Ref PublicSubnet2]
+        - [!Ref ExistingPublicSubnet1Id, !Ref ExistingPublicSubnet2Id]
 
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Enable access to the RDS instance
-      VpcId: !Ref VPC
+      VpcId: !If [ShouldCreateVPC, !Ref VPC, !Ref ExistingVPCId]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
@@ -161,7 +184,7 @@ Resources:
       AllocatedStorage: !Ref AllocatedStorage
       DBName: !Ref DBName
       Engine: postgres
-      EngineVersion: 14.5
+      EngineVersion: 16.3  # Version that supports pgvector
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       VPCSecurityGroups:
@@ -169,20 +192,12 @@ Resources:
       DBSubnetGroupName: !Ref RDSDBSubnetGroup
       MultiAZ: !Ref MultiAZ
       PubliclyAccessible: true
+      StorageEncrypted: true
       Tags:
         - Key: Name
           Value: PGVectorRDSInstance
       EnableCloudwatchLogsExports:
         - postgresql
-
-  RDSPGVectorExtension:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      DBInstanceIdentifier: !Ref RDSInstance
-      Engine: postgres
-      Parameters:
-        - Name: shared_preload_libraries
-          Value: 'pgvector'
 
 Outputs:
   RDSInstanceEndpoint:
@@ -191,3 +206,12 @@ Outputs:
   RDSPort:
     Description: The port number of the RDS instance
     Value: !GetAtt RDSInstance.Endpoint.Port
+  VPCId:
+    Description: The ID of the VPC
+    Value: !If [ShouldCreateVPC, !Ref VPC, !Ref ExistingVPCId]
+  PublicSubnet1Id:
+    Description: The ID of Public Subnet 1
+    Value: !If [ShouldCreateVPC, !Ref PublicSubnet1, !Ref ExistingPublicSubnet1Id]
+  PublicSubnet2Id:
+    Description: The ID of Public Subnet 2
+    Value: !If [ShouldCreateVPC, !Ref PublicSubnet2, !Ref ExistingPublicSubnet2Id]
