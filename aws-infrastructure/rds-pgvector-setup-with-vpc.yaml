@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template to deploy an RDS PostgreSQL instance with PGvector extension in a VPC.
+
+Parameters:
+  DBInstanceClass:
+    Description: The database instance class
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues:
+      - db.t4g.micro
+      - db.t3.medium
+      - db.t3.large
+      - db.m5.large
+  AllocatedStorage:
+    Description: The size of the database (in GB)
+    Type: Number
+    Default: 20
+  DBUsername:
+    Description: The database admin username
+    Type: String
+    NoEcho: true
+  DBPassword:
+    Description: The database admin password
+    Type: String
+    NoEcho: true
+  DBName:
+    Description: The name of the PostgreSQL database
+    Type: String
+    Default: mydb
+  VPCCIDR:
+    Description: CIDR block for the VPC
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnetCIDR1:
+    Description: CIDR block for the public subnet in Availability Zone 1
+    Type: String
+    Default: 10.0.1.0/24
+  PublicSubnetCIDR2:
+    Description: CIDR block for the public subnet in Availability Zone 2
+    Type: String
+    Default: 10.0.2.0/24
+  PrivateSubnetCIDR1:
+    Description: CIDR block for the private subnet in Availability Zone 1
+    Type: String
+    Default: 10.0.3.0/24
+  PrivateSubnetCIDR2:
+    Description: CIDR block for the private subnet in Availability Zone 2
+    Type: String
+    Default: 10.0.4.0/24
+  MultiAZ:
+    Description: Enable Multi-AZ for the RDS instance
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: RDS-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: RDS-InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR1
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR2
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCIDR1
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCIDR2
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTable
+
+  RDSDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable access to the RDS instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref AllocatedStorage
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: 14.5
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref RDSDBSubnetGroup
+      MultiAZ: !Ref MultiAZ
+      PubliclyAccessible: true
+      Tags:
+        - Key: Name
+          Value: PGVectorRDSInstance
+      EnableCloudwatchLogsExports:
+        - postgresql
+
+  RDSPGVectorExtension:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref RDSInstance
+      Engine: postgres
+      Parameters:
+        - Name: shared_preload_libraries
+          Value: 'pgvector'
+
+Outputs:
+  RDSInstanceEndpoint:
+    Description: The connection endpoint for the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Address
+  RDSPort:
+    Description: The port number of the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Port

@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template to deploy an RDS PostgreSQL instance with PGvector extension in an existing VPC.
+
+Parameters:
+  DBInstanceClass:
+    Description: The database instance class
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues:
+      - db.t4g.micro
+      - db.t3.medium
+      - db.t3.large
+      - db.m5.large
+  AllocatedStorage:
+    Description: The size of the database (in GB)
+    Type: Number
+    Default: 20
+  DBUsername:
+    Description: The database admin username
+    Type: String
+    NoEcho: true
+  DBPassword:
+    Description: The database admin password
+    Type: String
+    NoEcho: true
+  DBName:
+    Description: The name of the PostgreSQL database
+    Type: String
+    Default: mydb
+  VPCSecurityGroupIds:
+    Description: List of security groups for the RDS instance
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SubnetIds:
+    Description: List of subnet IDs for the DB Subnet Group
+    Type: List<AWS::EC2::Subnet::Id>
+  MultiAZ:
+    Description: Enable Multi-AZ for the RDS instance
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+Resources:
+  RDSDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instance
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: RDSSubnetGroup
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref AllocatedStorage
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: 14.5
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups: !Ref VPCSecurityGroupIds
+      DBSubnetGroupName: !Ref RDSDBSubnetGroup
+      MultiAZ: !Ref MultiAZ
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: PGVectorRDSInstance
+      EnableCloudwatchLogsExports:
+        - postgresql
+
+  RDSPGVectorExtension:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref RDSInstance
+      Engine: postgres
+      Parameters:
+        - Name: shared_preload_libraries
+          Value: 'pgvector'
+
+Outputs:
+  RDSInstanceEndpoint:
+    Description: The connection endpoint for the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Address
+  RDSPort:
+    Description: The port number of the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Port
