@@ -1,1 +1,6 @@
 .env
+email_scraping/EmailsInbox
+email_scraping/EmailsSent
+.DS_Store
+email_scraping/email_documents.pkl
+email_scraping/embedding_tokens.xlsx

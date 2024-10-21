@@ -12,7 +12,7 @@ fi
 AWS_REGION=${AWS_REGION:-"us-east-1"}
 
 # Set your stack name
-STACK_NAME=${STACK_NAME:-"RDSPGVectorStack"}
+STACK_NAME=${STACK_NAME:-"RDSPGVectorStack-1"}
 
 # Set the path to your CloudFormation template
 TEMPLATE_PATH=${TEMPLATE_PATH:-"aws-infrastructure/rds-pgvector-setup-with-vpc.yaml"}
