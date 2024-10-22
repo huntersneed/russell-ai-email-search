@@ -15,6 +15,8 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
+from email.utils import parsedate_to_datetime
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -95,7 +97,7 @@ def count_tokens(text: str) -> int:
     """
     Count the number of tokens in a given text using tiktoken.
     """
-    encoding = tiktoken.encoding_for_model("text-embedding-ada-002")
+    encoding = tiktoken.encoding_for_model("text-embedding-3-small")
     return len(encoding.encode(text))
 
 def calculate_embedding_tokens(documents: List[Document], chunk_size: int, chunk_overlap: int) -> Tuple[pd.DataFrame, int]:
@@ -168,6 +170,15 @@ def load_documents(input_file: str) -> List[Document]:
     logging.info(f"Loaded {len(documents)} documents from {input_file}")
     return documents
 
+def parse_date(date_string: str) -> str:
+    try:
+        return datetime.fromisoformat(date_string).isoformat()
+    except ValueError:
+        return date_string  # Return original string if parsing fails
+
+def clean_url(url: str) -> str:
+    return url.replace('3D"', '').strip('"')
+
 def prepare_documents(parsed_emails: List[Dict], chunk_size: int, chunk_overlap: int) -> List[Document]:
     """Prepare Langchain documents from parsed emails with comprehensive metadata."""
     logging.info("Preparing documents for embedding...")
@@ -180,13 +191,32 @@ def prepare_documents(parsed_emails: List[Dict], chunk_size: int, chunk_overlap:
         metadata = {
             "source": email['source'],
             "subject": email['metadata'].get('subject', ''),
-            "from": email['metadata'].get('from', ''),
-            "to": email['metadata'].get('to', ''),
-            "cc": email['metadata'].get('cc', ''),
-            "date": email['metadata'].get('date', ''),
-            "attachments": email['metadata'].get('attachments', []),
-            # Add any other relevant metadata fields
+            "from": email['metadata'].get('sent_from', [''])[0],  # Take the first sender if multiple
+            "to": ', '.join(email['metadata'].get('sent_to', [])),
+            "message_id": email['metadata'].get('email_message_id', '').strip(),
+            "date": parse_date(email['metadata'].get('last_modified', '')),
+            "languages": email['metadata'].get('languages', []),
+            "filetype": email['metadata'].get('filetype', ''),
+            "file_directory": email['metadata'].get('file_directory', ''),
+            "filename": email['metadata'].get('filename', ''),
+            "category": email['metadata'].get('category', ''),
+            "element_id": email['metadata'].get('element_id', ''),
+            "category_depth": email['metadata'].get('category_depth', 0),
+            "link_texts": email['metadata'].get('link_texts', []),
+            "link_urls": [clean_url(url) for url in email['metadata'].get('link_urls', [])],
+            "parent_id": email['metadata'].get('parent_id', ''),
+            "text_as_html": email['metadata'].get('text_as_html', ''),
+            "unique_id": f"{email['metadata'].get('filename', '')}_{email['metadata'].get('element_id', '')}"
         }
+        
+        # Handle multiple "Received" headers if present
+        received_headers = email['metadata'].get('received', [])
+        if isinstance(received_headers, str):
+            received_headers = [received_headers]
+        metadata['received'] = received_headers
+        
+        # Add all raw headers for potential future use
+        metadata['headers'] = email['metadata']
         
         # Create a document for each chunk with the full metadata
         for i, chunk in enumerate(chunks):
@@ -199,6 +229,14 @@ def prepare_documents(parsed_emails: List[Dict], chunk_size: int, chunk_overlap:
             ))
     
     logging.info(f"Prepared {len(documents)} document chunks with metadata")
+    
+    # Log sample of prepared documents
+    if documents:
+        sample_doc = documents[0]
+        logging.info("Sample of prepared document:")
+        logging.info(f"Content preview: {sample_doc.page_content[:200]}...")
+        logging.info(f"Metadata: {sample_doc.metadata}")
+    
     return documents
 
 def embed_and_store_emails(documents: List[Document], connection_string: str, model: str):
@@ -221,6 +259,13 @@ def embed_and_store_emails(documents: List[Document], connection_string: str, mo
     for i in tqdm(range(0, total_documents, batch_size), desc="Embedding and storing"):
         batch = documents[i:i+batch_size]
         try:
+            # Log sample data from the first document in each batch
+            if batch:
+                sample_doc = batch[0]
+                logging.info(f"Sample document from batch {i//batch_size + 1}:")
+                logging.info(f"Content preview: {sample_doc.page_content[:200]}...")
+                logging.info(f"Metadata: {sample_doc.metadata}")
+
             vector_store.add_documents(batch)
             logging.info(f"Successfully embedded and stored batch {i//batch_size + 1}/{(total_documents-1)//batch_size + 1}")
         except Exception as e:
@@ -229,6 +274,19 @@ def embed_and_store_emails(documents: List[Document], connection_string: str, mo
 
     logging.info("Embedding and storage process completed.")
     logging.info(f"Total documents processed: {total_documents}")
+
+    # Add a verification step
+    logging.info("Verifying stored embeddings...")
+    try:
+        results = vector_store.similarity_search("Test query", k=1)
+        if results:
+            logging.info("Successfully retrieved a document from the vector store.")
+            logging.info(f"Retrieved document content preview: {results[0].page_content[:200]}...")
+            logging.info(f"Retrieved document metadata: {results[0].metadata}")
+        else:
+            logging.warning("No documents retrieved from the vector store.")
+    except Exception as e:
+        logging.error(f"Error verifying stored embeddings: {str(e)}")
 
 def get_connection_string():
     username = os.getenv('DB_USERNAME')
@@ -296,3 +354,4 @@ if __name__ == "__main__":
                 print("Embedding process cancelled.")
         else:
             print(f"Error: Document file {args.output} not found. Please run with --parse first.")
+
