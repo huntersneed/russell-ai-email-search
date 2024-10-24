@@ -3,6 +3,7 @@ import argparse
 import pickle
 from langchain_community.document_loaders import UnstructuredEmailLoader
 from langchain_postgres import PGVector
+from langchain_community.vectorstores.pgvector import DistanceStrategy  # Add this import
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Dict, Tuple
@@ -17,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from email.utils import parsedate_to_datetime
 from datetime import datetime
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -239,26 +241,46 @@ def prepare_documents(parsed_emails: List[Dict], chunk_size: int, chunk_overlap:
     
     return documents
 
-def embed_and_store_emails(documents: List[Document], connection_string: str, model: str):
+def embed_and_store_emails(documents: List[Document], connection_string: str, model: str, chunk_size: int, chunk_overlap: int):
     total_documents = len(documents)
     logging.info(f"Embedding and storing {total_documents} document chunks")
-
+    
+    # Get embedding dimension based on the model
+    embedding_dims = {
+        'text-embedding-3-small': 1536,
+        'text-embedding-3-large': 3072,
+        'ada_v2': 1536
+    }
+    
     logging.info(f"Initializing embedding function with model: {model}")
     embedding_function = OpenAIEmbeddings(model=model, api_key=os.getenv('WF_INTERNAL_OPENAI'))
-
+    
     logging.info("Starting embedding and storage process...")
-    batch_size = 100  # Adjust this based on your needs and API limits
-
-    # Create SQLAlchemy engine
-    engine = create_engine(connection_string)
-
-    # Create PGVector instance
+    batch_size = 100
+    
+    # Create SQLAlchemy engine with connection pooling
+    engine = get_db_engine(connection_string)
+    
+    # Create PGVector instance with improved configuration
     vector_store = PGVector(
-        embedding_function=embedding_function,
+        embeddings=embedding_function,
         collection_name="email_embeddings",
         connection=engine,
-        use_jsonb=True
+        embedding_length=embedding_dims[model],
+        use_jsonb=True,
+        pre_delete_collection=False,
+        distance_strategy=DistanceStrategy.COSINE,
+        collection_metadata={
+            "description": "Email embeddings for search and retrieval",
+            "model": model,
+            "created_at": datetime.now().isoformat(),
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap
+        }
     )
+
+    # Ensure the collection exists with proper indexes
+    vector_store.create_collection()
 
     for i in tqdm(range(0, total_documents, batch_size), desc="Embedding and storing"):
         batch = documents[i:i+batch_size]
@@ -268,25 +290,62 @@ def embed_and_store_emails(documents: List[Document], connection_string: str, mo
                 sample_doc = batch[0]
                 logging.info(f"Sample document from batch {i//batch_size + 1}:")
                 logging.info(f"Content preview: {sample_doc.page_content[:200]}...")
-                logging.info(f"Metadata: {sample_doc.metadata}")
+                logging.info(f"Metadata keys: {list(sample_doc.metadata.keys())}")
+
+            # Add error handling for metadata serialization
+            for doc in batch:
+                # Ensure all metadata values are JSON serializable
+                doc.metadata = {
+                    k: (v if isinstance(v, (str, int, float, bool, list, dict)) else str(v))
+                    for k, v in doc.metadata.items()
+                }
 
             vector_store.add_documents(batch)
             logging.info(f"Successfully embedded and stored batch {i//batch_size + 1}/{(total_documents-1)//batch_size + 1}")
         except Exception as e:
             logging.error(f"Error in batch {i//batch_size + 1}: {str(e)}")
+            # Log the problematic documents
+            for doc in batch:
+                try:
+                    json.dumps(doc.metadata)
+                except TypeError as json_error:
+                    logging.error(f"JSON serialization error in document metadata: {str(json_error)}")
+                    logging.error(f"Problematic metadata: {doc.metadata}")
             raise e
 
     logging.info("Embedding and storage process completed.")
     logging.info(f"Total documents processed: {total_documents}")
 
-    # Add a verification step
+    # Enhanced verification step
     logging.info("Verifying stored embeddings...")
     try:
-        results = vector_store.similarity_search("Test query", k=1)
+        # Test both similarity search and metadata filtering
+        test_query = "Test query"
+        metadata_filter = {"chunk_index": 0}  # Test with a common metadata field
+        
+        # Test basic similarity search
+        results = vector_store.similarity_search(
+            test_query,
+            k=1,
+            filter=metadata_filter
+        )
+        
         if results:
             logging.info("Successfully retrieved a document from the vector store.")
             logging.info(f"Retrieved document content preview: {results[0].page_content[:200]}...")
             logging.info(f"Retrieved document metadata: {results[0].metadata}")
+            
+            # Test metadata filtering
+            logging.info("Testing metadata filtering...")
+            filtered_results = vector_store.similarity_search(
+                test_query,
+                k=1,
+                filter={"from": results[0].metadata.get("from")}
+            )
+            if filtered_results:
+                logging.info("Metadata filtering working correctly.")
+            else:
+                logging.warning("Metadata filtering returned no results.")
         else:
             logging.warning("No documents retrieved from the vector store.")
     except Exception as e:
@@ -353,9 +412,14 @@ if __name__ == "__main__":
             print(f"\nEstimated cost for selected model ({args.model}): ${estimated_cost:.2f}")
             user_input = input("Do you want to proceed with embedding? (y/n): ")
             if user_input.lower() == 'y':
-                embed_and_store_emails(documents, args.connection_string, args.model)
+                embed_and_store_emails(
+                    documents, 
+                    args.connection_string, 
+                    args.model,
+                    args.chunk_size,  # Add these parameters
+                    args.chunk_overlap
+                )
             else:
                 print("Embedding process cancelled.")
         else:
             print(f"Error: Document file {args.output} not found. Please run with --parse first.")
-
