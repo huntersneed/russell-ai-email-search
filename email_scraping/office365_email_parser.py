@@ -2,7 +2,7 @@ import os
 import argparse
 import pickle
 from langchain_community.document_loaders import UnstructuredEmailLoader
-from langchain_community.vectorstores.pgvector import PGVector
+from langchain_postgres import PGVector
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Dict, Tuple
@@ -249,11 +249,15 @@ def embed_and_store_emails(documents: List[Document], connection_string: str, mo
     logging.info("Starting embedding and storage process...")
     batch_size = 100  # Adjust this based on your needs and API limits
 
-    # Create PGVector instance without the engine parameter
+    # Create SQLAlchemy engine
+    engine = create_engine(connection_string)
+
+    # Create PGVector instance
     vector_store = PGVector(
-        connection_string=connection_string,
         embedding_function=embedding_function,
-        collection_name="email_embeddings"
+        collection_name="email_embeddings",
+        connection=engine,
+        use_jsonb=True
     )
 
     for i in tqdm(range(0, total_documents, batch_size), desc="Embedding and storing"):
