@@ -19,6 +19,7 @@ from sqlalchemy.pool import QueuePool
 from email.utils import parsedate_to_datetime
 from datetime import datetime
 import json
+from sqlalchemy import text
 
 # Load environment variables from .env file
 load_dotenv()
@@ -264,19 +265,19 @@ def embed_and_store_emails(documents: List[Document], connection_string: str, mo
     # Create PGVector instance with improved configuration
     vector_store = PGVector(
         embeddings=embedding_function,
-        collection_name="email_embeddings",
         connection=engine,
+        collection_name="email_embeddings",
         embedding_length=embedding_dims[model],
-        use_jsonb=True,
-        pre_delete_collection=False,
-        distance_strategy=DistanceStrategy.COSINE,
         collection_metadata={
             "description": "Email embeddings for search and retrieval",
             "model": model,
             "created_at": datetime.now().isoformat(),
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap
-        }
+        },
+        distance_strategy=DistanceStrategy.COSINE,
+        pre_delete_collection=False,
+        use_jsonb=True
     )
 
     # Ensure the collection exists with proper indexes

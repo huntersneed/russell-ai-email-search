@@ -56,18 +56,23 @@ def clear_tables(conn, table_names, use_cascade=False):
         conn.rollback()
         print(f"Error clearing tables: {e}")
 
-if __name__ == "__main__":
-    conn = connect_to_db()
-    if conn:
-        list_tables(conn)
-        tables_to_clear = input("\nEnter the name(s) of the table(s) you want to clear (comma-separated): ").split(',')
-        tables_to_clear = [table.strip() for table in tables_to_clear]
-        use_cascade = input("Do you want to use CASCADE to clear related tables? (y/n): ").lower() == 'y'
-        confirm = input(f"Are you sure you want to clear all contents of {', '.join(tables_to_clear)}? This action cannot be undone. (y/n): ")
-        if confirm.lower() == 'y':
-            clear_tables(conn, tables_to_clear, use_cascade)
+def clear_pgvector_tables():
+    try:
+        conn = connect_to_db()
+        if conn:
+            with conn.cursor() as cur:
+                # Drop tables completely (more thorough than TRUNCATE)
+                cur.execute("""
+                    DROP TABLE IF EXISTS langchain_pg_embedding CASCADE;
+                    DROP TABLE IF EXISTS langchain_pg_collection CASCADE;
+                """)
+                conn.commit()
+            print("Successfully dropped PGVector tables")
+            conn.close()
         else:
-            print("Operation cancelled.")
-        conn.close()
-    else:
-        print("Failed to connect to the database.")
+            print("Failed to connect to the database.")
+    except Exception as e:
+        print(f"Error dropping tables: {e}")
+
+if __name__ == "__main__":
+    clear_pgvector_tables()
