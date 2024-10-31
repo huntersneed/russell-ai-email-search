@@ -18,17 +18,31 @@ This repository contains a powerful AI-driven email search and analysis tool tha
 
 ## Components
 
-### 1. Email Parser and Embedder
+### 1. Email Downloader
 
-Located in `email_scraping/email_parser.py`, this script:
+Located in `email_scraping/download_emails.py`, this script:
 
-- Parses emails from specified directories
-- Prepares documents for embedding
+- Authenticates with Microsoft Graph API using device flow
+- Downloads emails from Office 365 inbox and sent folders
+- Saves emails in .eml format to local directories
+- Implements retry logic and rate limiting
+- Handles batch processing for efficient downloads
+
+### 2. Email Parser and Embedder
+
+Located in `email_scraping/office365_email_parser.py`, this script:
+
+- Parses downloaded .eml files using UnstructuredEmailLoader
+- Extracts comprehensive email metadata (sender, recipients, dates, etc.)
+- Chunks email content with configurable sizes and overlap
 - Calculates token usage and estimated costs
 - Embeds email content using OpenAI's embedding models
-- Stores embeddings in a PostgreSQL database with pgvector
+- Stores embeddings and metadata in PostgreSQL with pgvector
+- Supports multiple embedding models (text-embedding-3-small/large, ada_v2)
+- Implements connection pooling and error handling
+- Provides verification of stored embeddings
 
-### 2. Frontend Chat Interface
+### 3. Frontend Chat Interface
 
 Located in `frontend/app.py`, this Streamlit application provides:
 
@@ -37,7 +51,7 @@ Located in `frontend/app.py`, this Streamlit application provides:
 - Metadata filters for sender, subject, and date range
 - Display of relevant email sources for each query
 
-### 3. AWS Infrastructure
+### 4. AWS Infrastructure
 
 - `aws-infrastructure/rds-pgvector-setup-with-vpc.yaml`: CloudFormation template for setting up RDS with a new VPC
 - `aws-infrastructure/rds-pgvector-setup-without-vpc.yaml`: CloudFormation template for setting up RDS in an existing VPC
@@ -47,7 +61,7 @@ These templates set up:
 - Necessary security groups and subnet groups
 - Customizable database parameters
 
-### 4. Deployment Script
+### 5. Deployment Script
 
 Located at `deploy-with-vpc.sh`, this script automates the deployment process:
 
@@ -55,7 +69,7 @@ Located at `deploy-with-vpc.sh`, this script automates the deployment process:
 - Creates or updates the CloudFormation stack
 - Sets up the pgvector extension in the RDS instance
 
-### 5. Utility Scripts
+### 6. Utility Scripts
 
 Located in the `utils` directory:
 
@@ -65,7 +79,17 @@ Located in the `utils` directory:
 
 ## Setup and Usage
 
-### Azure App Registration
+### 1. AWS Infrastructure Deployment
+
+1. Ensure you have the AWS CLI installed and configured with the necessary credentials.
+2. Create a `.env` file in the root directory with the required environment variables (see Environment Variables section).
+3. Run the deployment script:
+   ```
+   ./deploy-with-vpc.sh
+   ```
+   This script will create or update the CloudFormation stack and set up the RDS instance with pgvector.
+
+### 2. Azure App Registration
 
 1. Go to the [Azure Portal](https://portal.azure.com/).
 2. Navigate to "Azure Active Directory" > "App registrations".
@@ -82,26 +106,29 @@ Located in the `utils` directory:
    - User.Read
 10. Click "Grant admin consent" for your organization.
 
-### AWS Infrastructure Deployment
-
-1. Ensure you have the AWS CLI installed and configured with the necessary credentials.
-2. Create a `.env` file in the root directory with the required environment variables (see below).
-3. Run the deployment script:
-   ```
-   ./deploy-with-vpc.sh
-   ```
-   This script will create or update the CloudFormation stack and set up the RDS instance with pgvector.
-
-### Application Setup
+### 3. Application Setup
 
 1. Clone the repository
 2. Install required dependencies (requirements.txt file needed)
-3. Set up your `.env` file with the required variables, including Azure App Registration details (see Environment Variables section)
-4. Run the email parser to process and embed emails:
+3. Set up your `.env` file with the required variables, including Azure App Registration details and AWS infrastructure details
+4. Verify database connection:
    ```
-   python email_scraping/email_parser.py --parse --embed
+   python utils/check_db_connection.py
    ```
-5. Launch the Streamlit app:
+5. Download your emails:
+   ```
+   python email_scraping/download_emails.py
+   ```
+   This will create `Emails/Inbox` and `Emails/Sent` directories with your .eml files.
+6. Process and embed the emails:
+   ```
+   python email_scraping/office365_email_parser.py --parse --embed
+   ```
+   You can customize the embedding process with additional arguments:
+   - `--chunk-size`: Size of text chunks (default: 1000)
+   - `--chunk-overlap`: Overlap between chunks (default: 200)
+   - `--model`: Embedding model to use (default: text-embedding-3-small)
+7. Launch the Streamlit app:
    ```
    streamlit run frontend/app.py
    ```

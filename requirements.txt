@@ -1,0 +1,35 @@
+# Core Python Packages
+python-dotenv
+numpy
+pandas
+tqdm
+argparse
+
+# Database
+psycopg2
+psycopg
+sqlalchemy
+
+# LangChain Packages
+langchain-community
+langchain-postgres
+langchain-openai
+langchain-anthropic
+langchain-core
+langchain
+
+# OpenAI/Embeddings
+openai
+tiktoken
+
+# Streamlit
+streamlit
+
+# Other ML/NLP
+sentence-transformers
+
+# HTTP Requests
+requests
+
+# File Processing
+unstructured
